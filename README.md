@@ -1,7 +1,7 @@
 # Penny Wise - Discord Music Bot 🎵
 
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GNU](https://img.shields.io/badge/License-GNU-yellow.svg)](https://www.gnu.org/licenses/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.3.1+-blue.svg)](https://discordpy.readthedocs.io/)
 
 A feature-rich Discord music bot with YouTube support and audio playback.
@@ -35,7 +35,7 @@ pip install -r requirements.txt
 ```
 
 3. Create .env:
-Remove .example extension and add your token there
+- Remove .example extension and add your token there
 
 4. Run
 ```bash
@@ -43,6 +43,7 @@ python src/main.py
 ```
 
 ## Commands 🎛️
+```bash
 !play:	Play YouTube audio,	example: !play never gonna give
 !stop:	Disconnect bot, example: !stop
-
+```
