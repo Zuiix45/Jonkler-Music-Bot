@@ -33,6 +33,8 @@ TIMEOUT_DELAY = 60
 # Dictionary to maintain queues for each guild
 queues = {}
 waiting_urls = {}
+is_playing_audio = {}
+audio_lock = {}
 
 async def search_youtube(query: str) -> dict:
     """Asynchronously search YouTube for a single song and return its info."""
@@ -75,15 +77,18 @@ async def player_loop(ctx: commands.Context):
             source = discord.FFmpegOpusAudio(next_song['url'], **FFMPEG_OPTIONS)
             ctx.voice_client.play(source, after=sync_playback_error)
             await ctx.send(f"Now playing: {next_song['title']}")
-        
-        # Wait for the audio to start playing
-        while True:
-            await asyncio.sleep(1)
-            if ctx.voice_client.is_playing():
-                break
+            
+            is_playing_audio[ctx.guild.id] = True
+            audio_lock[ctx.guild.id] = True
         
         # Wait for the audio to finish playing
-        while ctx.voice_client.is_playing():
+        while is_playing_audio[ctx.guild.id]:
+            if ctx.voice_client.is_playing():
+                audio_lock[ctx.guild.id] = False
+            
+            if not audio_lock[ctx.guild.id] and not ctx.voice_client.is_playing():
+                is_playing_audio[ctx.guild.id] = False
+            
             await asyncio.sleep(1)
     
     await ctx.send("Queue finished.")
