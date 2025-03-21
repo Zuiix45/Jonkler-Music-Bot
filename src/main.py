@@ -4,6 +4,9 @@ import asyncio
 from discord.ext import commands
 from yt_dlp import YoutubeDL
 from functools import partial
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Initialize the bot with appropriate intents
 intents = discord.Intents.default()
