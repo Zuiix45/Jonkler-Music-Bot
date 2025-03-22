@@ -73,6 +73,12 @@ async def playback_error(error: Exception):
 def sync_playback_error(error: Exception):
     asyncio.run_coroutine_threadsafe(playback_error(error), bot.loop)
 
+def reset(guild_id: int):
+    queues[guild_id] = []
+    waiting_urls[guild_id] = []
+    is_playing_audio[guild_id] = False
+    audio_lock[guild_id] = False
+
 async def player_loop(ctx: commands.Context):
     while queues[ctx.guild.id]:
         if not ctx.voice_client.is_playing():
@@ -98,8 +104,9 @@ async def player_loop(ctx: commands.Context):
     
     # Disconnect after a timeout
     await asyncio.sleep(TIMEOUT_DELAY)
-    if not ctx.voice_client.is_playing():
-        await ctx.voice_client.disconnect()
+    if ctx.voice_client:
+        if not ctx.voice_client.is_playing():
+            await ctx.voice_client.disconnect()
 
 async def extract_playlist_urls(ctx: commands.Context):
     while waiting_urls[ctx.guild.id]:
@@ -151,37 +158,27 @@ async def play(ctx: commands.Context, *, search: str):
                 waiting_urls[ctx.guild.id].append({'url': entry['url']})
             
         await ctx.send(f"Playlist added to queue with {len(info['entries'])} songs.")
-        
-        await extract_playlist_urls(ctx)
     else:
         # If it's a URL or a search term for a single song
         if "youtube.com/watch" in search:
-            info = await extract_info(search)
+            waiting_urls[ctx.guild.id].append({'url': search})
         else:
             info = await search_youtube(search)
         if not info:
             return await ctx.send("No results found!")
         
-        track = {
-            'url': info['url'],
-            'title': info.get('title', 'Unknown Title')
-        }
+        waiting_urls[ctx.guild.id].append({'url': info['url']})
         
-        queues[ctx.guild.id].append(track)
-        await ctx.send(f"Added to queue: {track['title']}")
-        
-        # Start playing if not already playing
-        if not ctx.voice_client.is_playing():
-            ctx.bot.loop.create_task(player_loop(ctx))
+    await extract_playlist_urls(ctx)
 
 @bot.command()
 async def stop(ctx: commands.Context):
     """Stop playback and disconnect."""
     if ctx.voice_client:
         if ctx.guild.id in queues:
-            queues[ctx.guild.id].clear()
-        if ctx.voice_client.is_playing():
-            ctx.voice_client.stop()
+            reset(ctx.guild.id)
+            
+        await ctx.voice_client.disconnect()
     else:
         await ctx.send("Not in a voice channel!")
 
@@ -194,6 +191,26 @@ async def skip(ctx: commands.Context):
         await ctx.send("Skipped the current song.")
     else:
         await ctx.send("Not in a voice channel!")
+
+@bot.command()
+async def queue(ctx: commands.Context):
+    """Display the current queue."""
+    if ctx.guild.id in queues and queues[ctx.guild.id]:
+        queue_list = [f"{i+1}. {song['title']}" for i, song in enumerate(queues[ctx.guild.id])]
+        await ctx.send("\n".join(queue_list))
+    else:
+        await ctx.send("Queue is empty.")
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member == bot.user:
+        # Reset the queues if the bot leaves the voice channel
+        if before.channel and not after.channel:
+            reset(member.guild.id)
+
+@bot.event
+async def on_ready():
+    print(f"Application Started: {bot.user}")
 
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_BOT_TOKEN"))
