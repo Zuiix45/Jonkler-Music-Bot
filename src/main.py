@@ -201,6 +201,11 @@ async def queue(ctx: commands.Context):
     else:
         await ctx.send("Queue is empty.")
 
+@bot.command()
+async def okul(ctx: commands.Context):
+    """Play the Okul song."""
+    await play(ctx, search="https://www.youtube.com/shorts/CevwOKeDFDQ")
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member == bot.user:
