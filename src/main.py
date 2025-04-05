@@ -3,6 +3,7 @@ import os
 import asyncio
 from discord.ext import commands
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 from functools import partial
 from dotenv import load_dotenv
 
@@ -14,6 +15,15 @@ intents.voice_states = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Set up logging to capture errors and warnings for yt-dlp
+class loggerOutputs:
+    def error(msg):
+        print("Captured Error: " + msg)
+    def warning(msg):
+        print("Captured Warning: " + msg)
+    def debug(msg):
+        print("Captured Log: " + msg)
+
 # YouTube-DL and FFmpeg options
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -24,6 +34,8 @@ YDL_OPTIONS = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
+    'quiet': True,
+    'logger': loggerOutputs,
 }
 
 FFMPEG_OPTIONS = {
@@ -32,6 +44,7 @@ FFMPEG_OPTIONS = {
 }
 
 TIMEOUT_DELAY = 60
+WAITING_URL_LOAD_LIMIT = 5
 
 # Dictionary to maintain queues for each guild
 queues = {}
@@ -52,7 +65,7 @@ async def search_youtube(query: str) -> dict:
             print(f"Search error: {e}")
             return None
 
-async def extract_info(url: str, playlist: bool = False) -> dict:
+async def extract_info(ctx: commands.Context, url: str, playlist: bool = False) -> dict:
     """Asynchronously extract info from a URL."""
     loop = asyncio.get_running_loop()
     opts = YDL_OPTIONS.copy()
@@ -61,7 +74,7 @@ async def extract_info(url: str, playlist: bool = False) -> dict:
         try:
             return await loop.run_in_executor(None, partial(ydl.extract_info, url, download=False))
         except Exception as e:
-            print(f"Extraction error: {e}")
+            waiting_urls[ctx.guild.id]
             return None
 
 # Define the async error handling function
@@ -110,11 +123,17 @@ async def player_loop(ctx: commands.Context):
 
 async def extract_playlist_urls(ctx: commands.Context):
     while waiting_urls[ctx.guild.id]:
+        if len(queues[ctx.guild.id]) > WAITING_URL_LOAD_LIMIT:
+            await asyncio.sleep(1)
+            continue
+        
         next_song = waiting_urls[ctx.guild.id].pop(0)
         info = await extract_info(next_song['url'])
         
         if not info:
             continue
+        
+        print(f"Adding {next_song['url']} to the queue in {ctx.guild.id} guild.")
         
         track = {
             'url': info['url'],
