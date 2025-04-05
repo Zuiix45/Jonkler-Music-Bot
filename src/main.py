@@ -18,11 +18,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Set up logging to capture errors and warnings for yt-dlp
 class loggerOutputs:
     def error(msg):
-        print("Captured Error: " + msg)
+        pass
     def warning(msg):
-        print("Captured Warning: " + msg)
+        pass
     def debug(msg):
-        print("Captured Log: " + msg)
+        pass
 
 # YouTube-DL and FFmpeg options
 YDL_OPTIONS = {
@@ -44,9 +44,12 @@ FFMPEG_OPTIONS = {
 }
 
 TIMEOUT_DELAY = 60
-WAITING_URL_LOAD_LIMIT = 5
+
+QUEUE_LOAD_LIMIT = 20
+QUEUE_EMBEDDING_SONG_LIMIT = 10
 
 # Dictionary to maintain queues for each guild
+currently_playing = {}
 queues = {}
 waiting_urls = {}
 is_playing_audio = {}
@@ -98,10 +101,11 @@ async def player_loop(ctx: commands.Context):
             next_song = queues[ctx.guild.id].pop(0)
             source = discord.FFmpegOpusAudio(next_song['url'], **FFMPEG_OPTIONS)
             ctx.voice_client.play(source, after=sync_playback_error)
-            await ctx.send(f"Now playing: {next_song['title']}")
             
             is_playing_audio[ctx.guild.id] = True
             audio_lock[ctx.guild.id] = True
+            
+            currently_playing[ctx.guild.id] = next_song
         
         # Wait for the audio to finish playing
         while is_playing_audio[ctx.guild.id]:
@@ -123,12 +127,12 @@ async def player_loop(ctx: commands.Context):
 
 async def extract_playlist_urls(ctx: commands.Context):
     while waiting_urls[ctx.guild.id]:
-        if len(queues[ctx.guild.id]) > WAITING_URL_LOAD_LIMIT:
+        if len(queues[ctx.guild.id]) > QUEUE_LOAD_LIMIT:
             await asyncio.sleep(1)
             continue
         
         next_song = waiting_urls[ctx.guild.id].pop(0)
-        info = await extract_info(next_song['url'])
+        info = await extract_info(ctx, next_song['url'])
         
         if not info:
             continue
@@ -137,7 +141,10 @@ async def extract_playlist_urls(ctx: commands.Context):
         
         track = {
             'url': info['url'],
-            'title': info.get('title', 'Unknown Title')
+            'title': info.get('title', 'Unknown Title'),
+            'duration': info.get('duration', 0),
+            'thumbnail': info.get('thumbnail', None),
+            'uploader': info.get('uploader', 'Unknown Uploader')
         }
         
         queues[ctx.guild.id].append(track)
@@ -164,7 +171,7 @@ async def play(ctx: commands.Context, *, search: str):
 
     # Check if the search query is a playlist URL (using 'list=' as a hint)
     if "list=" in search:
-        info = await extract_info(search, playlist=True)
+        info = await extract_info(ctx, search, playlist=True)
         if not info or 'entries' not in info:
             return await ctx.send("Couldn't retrieve playlist info.")
         
@@ -176,7 +183,7 @@ async def play(ctx: commands.Context, *, search: str):
             if "youtube.com/watch" in entry['url']:
                 waiting_urls[ctx.guild.id].append({'url': entry['url']})
             
-        await ctx.send(f"Playlist added to queue with {len(info['entries'])} songs.")
+        await ctx.send(f"{len(info['entries'])} songs found in the playlist.")
     else:
         # If it's a URL or a search term for a single song
         if "youtube.com/watch" in search:
@@ -187,6 +194,23 @@ async def play(ctx: commands.Context, *, search: str):
             return await ctx.send("No results found!")
         
         waiting_urls[ctx.guild.id].append({'url': info['url']})
+        
+        print(f"Adding {info['url']} to the queue in {ctx.guild.id} guild.")
+        
+        # Create an embed for the song being added to the waiting list
+        embed = discord.Embed(
+            title="Song Added to Queue",
+            description=f"[{info['title']}]({info['url']})",
+            color=discord.Color.green()
+        )
+        
+        embed.set_thumbnail(url=info.get('thumbnail', ''))
+        embed.add_field(name="Duration", value=f"{info.get('duration', 0)} seconds", inline=True)
+        embed.add_field(name="Uploader", value=info.get('uploader', 'Unknown Uploader'), inline=True)
+        embed.add_field(name="Position in Queue", value=len(waiting_urls[ctx.guild.id]), inline=True)
+        embed.add_field(name="Requested by", value=ctx.author.mention, inline=True)
+        
+        await ctx.send(embed=embed)
         
     await extract_playlist_urls(ctx)
 
@@ -207,18 +231,27 @@ async def skip(ctx: commands.Context):
     if ctx.voice_client:
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
-        await ctx.send("Skipped the current song.")
+        await ctx.send(f"Skipping {currently_playing[ctx.guild.id]['title']}...")
     else:
         await ctx.send("Not in a voice channel!")
 
 @bot.command()
 async def queue(ctx: commands.Context):
-    """Display the current queue."""
+    """Display the current queue with an embedded message for a fancy look."""
     if ctx.guild.id in queues and queues[ctx.guild.id]:
-        queue_list = [f"{i+1}. {song['title']}" for i, song in enumerate(queues[ctx.guild.id])]
-        await ctx.send("\n".join(queue_list))
+        queue_string = "\n".join([f"{i}. {song['title']}" for i, song in enumerate(queues[ctx.guild.id][:QUEUE_EMBEDDING_SONG_LIMIT], start=1)])
+        
+        if len(queues[ctx.guild.id]) > QUEUE_EMBEDDING_SONG_LIMIT:
+            queue_string += "\n...and more!"
+        
+        embed = discord.Embed(title="Current Queue", description=queue_string, color=discord.Color.blue())
+        embed.set_footer(text="Use !skip to skip the current song.")
+        embed.add_field(name="Total Songs", value=len(queues[ctx.guild.id]), inline=True)
+        
+        await ctx.send(embed=embed)
     else:
-        await ctx.send("Queue is empty.")
+        embed = discord.Embed(title="Queue is empty", description="Add some songs to get started!", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def okul(ctx: commands.Context):
