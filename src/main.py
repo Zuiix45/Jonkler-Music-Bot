@@ -1,10 +1,14 @@
 import discord
 import os
 import asyncio
+import functools
+import time
+from collections import deque
 from discord.ext import commands
 from yt_dlp import YoutubeDL
-from functools import partial
+from functools import partial, lru_cache
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
 
@@ -12,12 +16,17 @@ load_dotenv()
 TIMEOUT_DELAY = 240
 QUEUE_LOAD_LIMIT = 20
 QUEUE_EMBEDDING_SONG_LIMIT = 10
+MAX_CONCURRENT_EXTRACTIONS = 5  # Limit to avoid rate limiting
+CACHE_TTL = 3600  # 1 hour cache for YouTube data
 
-# FFmpeg options
+# FFmpeg options - optimized for better performance
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn'
+    'options': '-vn -af dynaudnorm=f=200:g=3:n=0:p=0.95'  # Added dynamic audio normalization
 }
+
+# Thread pool for CPU-bound tasks
+thread_pool = ThreadPoolExecutor(max_workers=4)
 
 class LoggerOutputs:
     @staticmethod
@@ -32,6 +41,31 @@ class LoggerOutputs:
     def debug(msg):
         pass
 
+class YouTubeCache:
+    """Cache for YouTube data with TTL"""
+    def __init__(self, ttl=CACHE_TTL):
+        self.cache = {}
+        self.ttl = ttl
+    
+    def get(self, key):
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.cache[key]
+        return None
+    
+    def set(self, key, value):
+        self.cache[key] = (value, time.time())
+    
+    def clear_expired(self):
+        """Clear expired cache entries"""
+        current_time = time.time()
+        expired_keys = [k for k, (_, t) in self.cache.items() if current_time - t >= self.ttl]
+        for key in expired_keys:
+            del self.cache[key]
+
 class YouTubeService:
     def __init__(self):
         self.ydl_opts = {
@@ -44,35 +78,69 @@ class YouTubeService:
                 'preferredquality': '192',
             }],
             'logger': LoggerOutputs,
+            'socket_timeout': 10,  # Reduce timeout for faster failure response
+            'retries': 2,          # Limit retries for faster response
         }
+        self.cache = YouTubeCache()
+        self.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXTRACTIONS)
     
     async def search_youtube(self, query: str) -> dict:
         """Asynchronously search YouTube for a single song and return its info."""
-        loop = asyncio.get_running_loop()
-        with YoutubeDL(self.ydl_opts) as ydl:
-            try:
-                info = await loop.run_in_executor(None, partial(ydl.extract_info, f"ytsearch:{query}", download=False))
-                if not info or not info.get('entries'):
+        cache_key = f"search:{query}"
+        cached_result = self.cache.get(cache_key)
+        if cached_result:
+            return cached_result
+            
+        async with self.extraction_semaphore:
+            loop = asyncio.get_running_loop()
+            with YoutubeDL(self.ydl_opts) as ydl:
+                try:
+                    info = await loop.run_in_executor(thread_pool, 
+                                                     partial(ydl.extract_info, f"ytsearch:{query}", download=False))
+                    if not info or not info.get('entries'):
+                        return None
+                    result = info['entries'][0]
+                    self.cache.set(cache_key, result)
+                    return result
+                except Exception as e:
+                    print(f"Search error: {e}")
                     return None
-                return info['entries'][0]
-            except Exception as e:
-                print(f"Search error: {e}")
-                return None
     
     async def extract_info(self, url: str, playlist: bool = False) -> dict:
-        """Asynchronously extract info from a URL."""
-        loop = asyncio.get_running_loop()
-        opts = self.ydl_opts.copy()
-        opts['noplaylist'] = not playlist
-        with YoutubeDL(opts) as ydl:
-            try:
-                return await loop.run_in_executor(None, partial(ydl.extract_info, url, download=False))
-            except Exception as e:
-                print(f"Extraction error: {e}")
-                return None
+        """Asynchronously extract info from a URL with caching."""
+        cache_key = f"info:{url}:{playlist}"
+        cached_result = self.cache.get(cache_key)
+        if cached_result:
+            return cached_result
+            
+        async with self.extraction_semaphore:
+            loop = asyncio.get_running_loop()
+            opts = self.ydl_opts.copy()
+            opts['noplaylist'] = not playlist
+            with YoutubeDL(opts) as ydl:
+                try:
+                    result = await loop.run_in_executor(thread_pool, 
+                                                      partial(ydl.extract_info, url, download=False))
+                    if result:
+                        self.cache.set(cache_key, result)
+                    return result
+                except Exception as e:
+                    print(f"Extraction error: {e}")
+                    return None
+    
+    async def extract_multiple_urls(self, urls, playlist=False):
+        """Extract info from multiple URLs concurrently."""
+        tasks = []
+        for url in urls:
+            tasks.append(self.extract_info(url, playlist))
+        
+        return await asyncio.gather(*tasks, return_exceptions=True)
     
     def format_track_data(self, info):
         """Format track data from YouTube info."""
+        if not info:
+            return None
+            
         return {
             'url': info['url'],
             'title': info.get('title', 'Unknown Title'),
@@ -84,25 +152,31 @@ class YouTubeService:
 class GuildState:
     def __init__(self, guild_id: int):
         self.guild_id = guild_id
-        self.queue = []
-        self.waiting_urls = []
+        self.queue = deque()  # Using deque for more efficient queue operations
+        self.waiting_urls = deque()
+        self.currently_playing = None
+        self.is_playing_audio = False
+        self.audio_lock = False
+        self.last_activity = time.time()
+    
+    def reset(self):
+        """Reset all state for this guild."""
+        self.queue.clear()
+        self.waiting_urls.clear()
         self.currently_playing = None
         self.is_playing_audio = False
         self.audio_lock = False
     
-    def reset(self):
-        """Reset all state for this guild."""
-        self.queue = []
-        self.waiting_urls = []
-        self.currently_playing = None
-        self.is_playing_audio = False
-        self.audio_lock = False
+    def update_activity(self):
+        """Update the last activity timestamp."""
+        self.last_activity = time.time()
 
 class MusicPlayer:
     def __init__(self, bot):
         self.bot = bot
         self.youtube_service = YouTubeService()
         self.guild_states = {}
+        self.cleanup_task = None
     
     def get_guild_state(self, guild_id: int) -> GuildState:
         """Get or create a guild state object."""
@@ -128,22 +202,28 @@ class MusicPlayer:
         
         while guild_state.queue and ctx.voice_client:
             if not ctx.voice_client.is_playing():
-                next_song = guild_state.queue.pop(0)
-                source = discord.FFmpegOpusAudio(next_song['url'], **FFMPEG_OPTIONS)
+                next_song = guild_state.queue.popleft()  # Using deque.popleft() for O(1) performance
                 
-                # Create a partial function to capture the context for error handling
-                error_callback = partial(self.sync_playback_error, ctx=ctx)
-                ctx.voice_client.play(source, after=error_callback)
-                
-                guild_state.is_playing_audio = True
-                guild_state.audio_lock = True
-                guild_state.currently_playing = next_song
-                
-                # Send now playing message
-                await self.send_now_playing_message(ctx, next_song)
-                
-                # Update the timestamp for the currently playing song
-                guild_state.currently_playing['timestamp'] = discord.utils.utcnow().timestamp()
+                try:
+                    source = discord.FFmpegOpusAudio(next_song['url'], **FFMPEG_OPTIONS)
+                    
+                    # Create a partial function to capture the context for error handling
+                    error_callback = partial(self.sync_playback_error, ctx=ctx)
+                    ctx.voice_client.play(source, after=error_callback)
+                    
+                    guild_state.is_playing_audio = True
+                    guild_state.audio_lock = True
+                    guild_state.currently_playing = next_song
+                    guild_state.update_activity()
+                    
+                    # Send now playing message
+                    await self.send_now_playing_message(ctx, next_song)
+                    
+                    # Update the timestamp for the currently playing song
+                    guild_state.currently_playing['timestamp'] = discord.utils.utcnow().timestamp()
+                except Exception as e:
+                    print(f"Error playing track: {e}")
+                    continue  # Skip this track and try the next one
             
             # Wait for the audio to finish playing
             while guild_state.is_playing_audio and ctx.voice_client:
@@ -153,7 +233,7 @@ class MusicPlayer:
                 if not guild_state.audio_lock and not ctx.voice_client.is_playing():
                     guild_state.is_playing_audio = False
                 
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced sleep time for more responsive queue processing
         
         # Disconnect after a timeout if nothing else is playing
         await asyncio.sleep(TIMEOUT_DELAY)
@@ -178,23 +258,39 @@ class MusicPlayer:
         await ctx.send(embed=embed)
     
     async def extract_playlist_urls(self, ctx: commands.Context):
-        """Process waiting URLs and add them to the queue."""
+        """Process waiting URLs and add them to the queue - optimized version."""
         guild_state = self.get_guild_state(ctx.guild.id)
         
+        # Process URLs in batches for better efficiency
         while guild_state.waiting_urls and ctx.voice_client:
             if len(guild_state.queue) > QUEUE_LOAD_LIMIT:
                 await asyncio.sleep(1)
                 continue
             
-            next_song = guild_state.waiting_urls.pop(0)
-            info = await self.youtube_service.extract_info(next_song['url'])
+            # Process multiple URLs concurrently (up to 5 at a time)
+            batch_size = min(MAX_CONCURRENT_EXTRACTIONS, len(guild_state.waiting_urls))
+            batch_urls = []
             
-            if ctx.voice_client and info:
-                track = self.youtube_service.format_track_data(info)
-                guild_state.queue.append(track)
-                
-                if not ctx.voice_client.is_playing():
-                    self.bot.loop.create_task(self.player_loop(ctx))
+            for _ in range(batch_size):
+                if guild_state.waiting_urls:
+                    batch_urls.append(guild_state.waiting_urls.popleft()['url'])
+            
+            # Extract info concurrently
+            results = await self.youtube_service.extract_multiple_urls(batch_urls)
+            
+            for i, info in enumerate(results):
+                if isinstance(info, Exception):
+                    print(f"Error extracting info: {info}")
+                    continue
+                    
+                if ctx.voice_client and info:
+                    track = self.youtube_service.format_track_data(info)
+                    if track:
+                        guild_state.queue.append(track)
+            
+            # Start playing if not already playing
+            if not ctx.voice_client.is_playing() and guild_state.queue:
+                self.bot.loop.create_task(self.player_loop(ctx))
         
         await asyncio.sleep(0.5)
     
@@ -208,6 +304,7 @@ class MusicPlayer:
             await ctx.author.voice.channel.connect()
         
         guild_state = self.get_guild_state(ctx.guild.id)
+        guild_state.update_activity()
         
         # Check if the search query is a playlist URL
         if "list=" in search:
@@ -351,6 +448,40 @@ class MusicPlayer:
             await ctx.send("Queue has been cleared!")
         else:
             await ctx.send("Queue is already empty!")
+    
+    async def start_cleanup_task(self):
+        """Start a background task to clean up inactive guilds and expired cache."""
+        self.cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
+    
+    async def _cleanup_loop(self):
+        """Periodically clean up inactive guilds and expired cache."""
+        try:
+            while True:
+                # Clean up expired cache entries
+                self.youtube_service.cache.clear_expired()
+                
+                # Clean up inactive guild states
+                current_time = time.time()
+                inactive_guilds = []
+                
+                for guild_id, state in self.guild_states.items():
+                    # If inactive for more than 15 minutes and not playing
+                    if (current_time - state.last_activity > 900 and 
+                        not state.is_playing_audio and 
+                        not state.queue and 
+                        not state.waiting_urls):
+                        inactive_guilds.append(guild_id)
+                
+                for guild_id in inactive_guilds:
+                    self.guild_states.pop(guild_id, None)
+                
+                await asyncio.sleep(300)  # Run cleanup every 5 minutes
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Error in cleanup loop: {e}")
+            # Restart the task
+            self.cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
 # Initialize the bot with appropriate intents
 intents = discord.Intents.default()
@@ -444,7 +575,7 @@ async def okul(ctx: commands.Context):
     
     okul_path = os.path.join(os.path.dirname(__file__), "..\\", os.getenv("OKUL_MEME_PATH"))
     if os.path.exists(okul_path):
-        ctx.voice_client.play(discord.FFmpegOpusAudio(okul_path, options="-filter:a 'volume=4.0'"))
+        ctx.voice_client.play(discord.FFmpegOpusAudio(okul_path, options="-vn -af dynaudnorm=f=200:g=3:n=0:p=0.95"))
     else:
         await ctx.send("Okul meme file not found!")
 
