@@ -1,7 +1,6 @@
 import discord
 import os
 import asyncio
-from discord import app_commands
 from discord.ext import commands
 from yt_dlp import YoutubeDL
 from functools import partial
@@ -142,6 +141,9 @@ class MusicPlayer:
                 
                 # Send now playing message
                 await self.send_now_playing_message(ctx, next_song)
+                
+                # Update the timestamp for the currently playing song
+                guild_state.currently_playing['timestamp'] = discord.utils.utcnow().timestamp()
             
             # Wait for the audio to finish playing
             while guild_state.is_playing_audio and ctx.voice_client:
@@ -188,8 +190,6 @@ class MusicPlayer:
             info = await self.youtube_service.extract_info(next_song['url'])
             
             if ctx.voice_client and info:
-                print(f"Adding {next_song['url']} to the queue in {ctx.guild.id} guild.")
-                
                 track = self.youtube_service.format_track_data(info)
                 guild_state.queue.append(track)
                 
@@ -390,6 +390,28 @@ try:
         ctx = await bot.get_context(interaction)
         await interaction.response.defer()
         await music_player.queue(ctx)
+        
+    @bot.tree.command(name="pause")
+    async def pause_slash(interaction: discord.Interaction):
+        """Pause the current playback."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        if ctx.voice_client and ctx.voice_client.is_playing():
+            ctx.voice_client.pause()
+            await interaction.followup.send("Playback paused.")
+        else:
+            await interaction.followup.send("Nothing is playing to pause!")
+    
+    @bot.tree.command(name="resume")
+    async def resume_slash(interaction: discord.Interaction):
+        """Resume the current playback."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        if ctx.voice_client and ctx.voice_client.is_paused():
+            ctx.voice_client.resume()
+            await interaction.followup.send("Playback resumed.")
+        else:
+            await interaction.followup.send("Nothing is paused to resume!")
 
     @bot.tree.command(name="clear")
     async def clear_slash(interaction: discord.Interaction):
@@ -408,32 +430,35 @@ except (ImportError, AttributeError) as e:
     
 @bot.command()
 async def okul(ctx: commands.Context):
-    """Pause the current music, play the Okul song, and resume."""
-    if ctx.voice_client is None:
+    """Pause the current music, play the Okul meme, and resume."""
+    if not ctx.author.voice:
         return await ctx.send("You need to be in a voice channel!")
     
-    playing = ctx.voice_client.is_playing()
+    if ctx.voice_client is None:
+        await ctx.author.voice.channel.connect()
     
+    time_point = discord.utils.utcnow().timestamp()
+    playing = ctx.voice_client.is_playing()
     if playing:
         ctx.voice_client.pause()
+    
+    okul_path = os.path.join(os.path.dirname(__file__), "..\\", os.getenv("OKUL_MEME_PATH"))
+    if os.path.exists(okul_path):
+        ctx.voice_client.play(discord.FFmpegOpusAudio(okul_path, options="-filter:a 'volume=4.0'"))
+    else:
+        await ctx.send("Okul meme file not found!")
 
-    # Play the Okul song
-    okul_url = "https://www.youtube.com/shorts/CevwOKeDFDQ"
-    okul_info = await music_player.youtube_service.extract_info(okul_url)
-    if not okul_info:
-        return await ctx.send("Failed to retrieve the Okul song.")
-
-    okul_track = music_player.youtube_service.format_track_data(okul_info)
-    okul_source = discord.FFmpegOpusAudio(okul_track['url'], **FFMPEG_OPTIONS)
-    ctx.voice_client.play(okul_source)
-
-    # Wait for the Okul song to finish
+    # Wait for the Okul meme to finish
     while ctx.voice_client.is_playing():
         await asyncio.sleep(1)
 
-    # Resume the previous music
-    if playing:
-        ctx.voice_client.resume()
+    # Replay the previous music from where it left off
+    guild_state = music_player.get_guild_state(ctx.guild.id)
+    
+    if playing and guild_state.currently_playing:
+        guild_state.currently_playing['timestamp'] += discord.utils.utcnow().timestamp() - time_point
+        previous_track = guild_state.currently_playing
+        ctx.voice_client.play(discord.FFmpegOpusAudio(previous_track['url'], options=f"-ss {discord.utils.utcnow().timestamp() - int(guild_state.currently_playing['timestamp'])} {FFMPEG_OPTIONS['options']}"))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
