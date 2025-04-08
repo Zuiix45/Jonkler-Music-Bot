@@ -1,9 +1,9 @@
 import discord
 import os
 import asyncio
+from discord import app_commands
 from discord.ext import commands
 from yt_dlp import YoutubeDL
-from yt_dlp.utils import DownloadError
 from functools import partial
 from dotenv import load_dotenv
 
@@ -112,7 +112,7 @@ class MusicPlayer:
         return self.guild_states[guild_id]
     
     def sync_playback_error(self, error, ctx):
-        """Handle playback errors."""
+        """Handle playback errors synchronously."""
         if error:
             print(f'Error in playback for guild {ctx.guild.id}: {error}')
             # Run the error handler asynchronously
@@ -361,6 +361,59 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Create our music player instance
 music_player = MusicPlayer(bot)
 
+# Handling command registration based on available library features
+try:
+    @bot.tree.command(name="play")
+    async def play_slash(interaction: discord.Interaction, search: str):
+        """Play a song or an entire playlist from YouTube."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.play(ctx, search)
+
+    @bot.tree.command(name="stop")
+    async def stop_slash(interaction: discord.Interaction):
+        """Stop playback and disconnect."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.stop(ctx)
+
+    @bot.tree.command(name="skip")
+    async def skip_slash(interaction: discord.Interaction):
+        """Skip the currently playing song."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.skip(ctx)
+
+    @bot.tree.command(name="queue")
+    async def queue_slash(interaction: discord.Interaction):
+        """Display the current queue."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.queue(ctx)
+
+    @bot.tree.command(name="clear")
+    async def clear_slash(interaction: discord.Interaction):
+        """Clear the current queue without stopping playback."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.clear(ctx)
+
+    @bot.tree.command(name="okul")
+    async def okul_slash(interaction: discord.Interaction):
+        """Play the Okul song."""
+        ctx = await bot.get_context(interaction)
+        await interaction.response.defer()
+        await music_player.play(ctx, "https://www.youtube.com/shorts/CevwOKeDFDQ")
+
+    # Set flag for slash commands availability
+    has_slash_commands = True
+except (ImportError, AttributeError) as e:
+    print(f"Slash commands not available: {e}")
+    print("Consider updating discord.py to version 2.0+ for slash command support")
+    print("pip install -U discord.py")
+    has_slash_commands = False
+
+# Keep the traditional prefix commands for backward compatibility
 @bot.command()
 async def play(ctx: commands.Context, *, search: str = None):
     """Play a song or an entire playlist from YouTube."""
@@ -403,6 +456,15 @@ async def on_voice_state_update(member, before, after):
 @bot.event
 async def on_ready():
     print(f"Application Started: {bot.user}")
+    # Sync commands with Discord only if slash commands are available
+    if has_slash_commands:
+        try:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} command(s)")
+        except Exception as e:
+            print(f"Failed to sync commands: {e}")
+    else:
+        print("Using prefix commands only. Prefix: '!'")
 
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_BOT_TOKEN"))
