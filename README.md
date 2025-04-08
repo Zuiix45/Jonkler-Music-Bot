@@ -75,24 +75,14 @@ Jonkler is a feature-rich Discord music bot that brings high-quality audio strea
 
 ## 💬 Commands
 
-### Prefix Commands
-| Command | Description | Example |
-|---------|-------------|---------|
-| `!play` | Play a song from YouTube | `!play never gonna give you up` |
-| `!stop` | Stop playback and disconnect | `!stop` |
-| `!skip` | Skip the current song | `!skip` |
-| `!queue` | Display the current queue | `!queue` |
-| `!clear` | Clear the current queue | `!clear` |
-| `!okul` | Play the Okul song | `!okul` |
-
 ### Slash Commands
-All commands are also available as slash commands:
-- `/play search:query` - Play a song from YouTube
-- `/stop` - Stop playback and disconnect
-- `/skip` - Skip the current song
-- `/queue` - Display the current queue
-- `/clear` - Clear the current queue
-- `/okul` - Play the Okul song
+| Command       | Description                     | Example                          |
+|---------------|---------------------------------|----------------------------------|
+| `/play`       | Play a song from YouTube       | `/play search:never gonna give you up` |
+| `/stop`       | Stop playback and disconnect   | `/stop`                          |
+| `/skip`       | Skip the current song          | `/skip`                          |
+| `/queue`      | Display the current queue      | `/queue`                         |
+| `/clear`      | Clear the current queue        | `/clear`                         |
 
 ## ⚙️ Configuration
 

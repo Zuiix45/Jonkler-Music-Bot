@@ -398,13 +398,6 @@ try:
         await interaction.response.defer()
         await music_player.clear(ctx)
 
-    @bot.tree.command(name="okul")
-    async def okul_slash(interaction: discord.Interaction):
-        """Play the Okul song."""
-        ctx = await bot.get_context(interaction)
-        await interaction.response.defer()
-        await music_player.play(ctx, "https://www.youtube.com/shorts/CevwOKeDFDQ")
-
     # Set flag for slash commands availability
     has_slash_commands = True
 except (ImportError, AttributeError) as e:
@@ -412,39 +405,35 @@ except (ImportError, AttributeError) as e:
     print("Consider updating discord.py to version 2.0+ for slash command support")
     print("pip install -U discord.py")
     has_slash_commands = False
-
-# Keep the traditional prefix commands for backward compatibility
-@bot.command()
-async def play(ctx: commands.Context, *, search: str = None):
-    """Play a song or an entire playlist from YouTube."""
-    if search is None:
-        return await ctx.send("Please provide a search term or URL.")
-    await music_player.play(ctx, search)
-
-@bot.command()
-async def stop(ctx: commands.Context):
-    """Stop playback and disconnect."""
-    await music_player.stop(ctx)
-
-@bot.command()
-async def skip(ctx: commands.Context):
-    """Skip the currently playing song."""
-    await music_player.skip(ctx)
-
-@bot.command()
-async def queue(ctx: commands.Context):
-    """Display the current queue."""
-    await music_player.queue(ctx)
-
-@bot.command()
-async def clear(ctx: commands.Context):
-    """Clear the current queue without stopping playback."""
-    await music_player.clear(ctx)
-
+    
 @bot.command()
 async def okul(ctx: commands.Context):
-    """Play the Okul song."""
-    await play(ctx, search="https://www.youtube.com/shorts/CevwOKeDFDQ")
+    """Pause the current music, play the Okul song, and resume."""
+    if ctx.voice_client is None:
+        return await ctx.send("You need to be in a voice channel!")
+    
+    playing = ctx.voice_client.is_playing()
+    
+    if playing:
+        ctx.voice_client.pause()
+
+    # Play the Okul song
+    okul_url = "https://www.youtube.com/shorts/CevwOKeDFDQ"
+    okul_info = await music_player.youtube_service.extract_info(okul_url)
+    if not okul_info:
+        return await ctx.send("Failed to retrieve the Okul song.")
+
+    okul_track = music_player.youtube_service.format_track_data(okul_info)
+    okul_source = discord.FFmpegOpusAudio(okul_track['url'], **FFMPEG_OPTIONS)
+    ctx.voice_client.play(okul_source)
+
+    # Wait for the Okul song to finish
+    while ctx.voice_client.is_playing():
+        await asyncio.sleep(1)
+
+    # Resume the previous music
+    if playing:
+        ctx.voice_client.resume()
 
 @bot.event
 async def on_voice_state_update(member, before, after):
